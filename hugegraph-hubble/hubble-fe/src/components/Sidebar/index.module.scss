@@ -1,0 +1,59 @@
+/*!
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+.toggleSlot {
+    position: absolute;
+    z-index: 2;
+    top: 4px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    width: 28px;
+    height: 40px;
+
+    :global(.workbench-navigation-inline-toggle) {
+        width: 28px;
+        min-width: 28px;
+        height: 32px;
+        color: var(--workbench-color-text-secondary);
+        border-radius: var(--workbench-radius);
+
+        &:hover,
+        &:focus-visible {
+            color: var(--workbench-color-brand-strong);
+            background: #eaf2ff;
+        }
+    }
+
+    // Reserve separate targets for the Home submenu arrow and the sidebar toggle.
+    + :global(.ant-menu) > :global(.ant-menu-submenu:first-child > .ant-menu-submenu-title) {
+        padding-right: 72px;
+
+        :global(.ant-menu-submenu-arrow) {
+            right: 52px;
+        }
+    }
+
+    + :global(.ant-menu-inline-collapsed) > :global(.ant-menu-submenu > .ant-menu-submenu-title) {
+        padding-left: 16px !important;
+    }
+
+    + :global(.ant-menu-inline-collapsed) > :global(.ant-menu-submenu:first-child > .ant-menu-submenu-title) {
+        padding-right: 40px;
+    }
+}

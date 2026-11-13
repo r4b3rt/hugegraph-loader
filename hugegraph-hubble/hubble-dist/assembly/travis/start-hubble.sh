@@ -1,5 +1,20 @@
 #!/bin/bash
-
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 export LANG=zh_CN.UTF-8
 set -e
 
@@ -18,6 +33,7 @@ PID_FILE=${BIN_PATH}/pid
 print_usage() {
     echo "  usage: start-hubble.sh [options]"
     echo "  options: "
+    echo "  -f,--foreground Start program in foreground mode"
     echo "  -d,--debug      Start program in debug mode"
     echo "  -h,--help       Display help information"
 }
@@ -35,11 +51,15 @@ for jar in "${LIB_PATH}"/*.jar; do
 done
 
 java_opts="-Xms512m"
+foreground="false"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-help|-h)
         print_usage
         exit 0
+        ;;
+        --foreground|-f)
+        foreground="true"
         ;;
         --debug|-d)
         java_opts="$java_opts -Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,address=8787,server=y,suspend=y"
@@ -60,19 +80,23 @@ fi
 
 # for collecting codecov
 agent_opts="-javaagent:${LIB_PATH}/jacocoagent.jar=includes=*,port=36320,destfile=jacoco-it.exec,output=tcpserver"
-main_class="com.baidu.hugegraph.HugeGraphHubble"
+main_class="org.apache.hugegraph.HugeGraphHubble"
 args=${CONF_PATH}/hugegraph-hubble.properties
 log=${LOG_PATH}/hugegraph-hubble.log
 
 echo -n "starting HugeGraphHubble "
-nohup nice -n 0 java -server "${java_opts}" "${agent_opts}" -Dhubble.home.path="${HOME_PATH}" -cp "${class_path}" ${main_class} "${args}" > "${log}" 2>&1 < /dev/null &
+if [[ ${foreground} == "false" ]]; then
+    nohup nice -n 0 java -server -Dfile.encoding=UTF-8 "${java_opts}" "${agent_opts}" -Dhubble.home.path="${HOME_PATH}" -cp "${class_path}" ${main_class} "${args}" > "${log}" 2>&1 < /dev/null &
+else
+    exec nice -n 0 java -server -Dfile.encoding=UTF-8 "${java_opts}" "${agent_opts}" -Dhubble.home.path="${HOME_PATH}" -cp "${class_path}" ${main_class} "${args}"
+fi
 pid=$!
 echo ${pid} > "${PID_FILE}"
 
 timeout_s=30
-server_host=$(read_property "${CONF_PATH}"/hugegraph-hubble.properties hubble.host)
-server_port=$(read_property "${CONF_PATH}"/hugegraph-hubble.properties hubble.port)
-server_url="http://${server_host}:${server_port}/actuator/health"
+server_host=$(read_property "${CONF_PATH}"/hugegraph-hubble.properties server.host)
+server_port=$(read_property "${CONF_PATH}"/hugegraph-hubble.properties server.port)
+server_url="http://${server_host}:${server_port}/about"
 
 wait_for_startup "${server_url}" ${timeout_s} || {
     cat "${log}"

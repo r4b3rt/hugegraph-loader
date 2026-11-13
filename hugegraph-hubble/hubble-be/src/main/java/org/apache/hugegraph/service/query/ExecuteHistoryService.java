@@ -1,0 +1,198 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.hugegraph.service.query;
+
+import java.time.Instant;
+import java.time.temporal.ChronoField;
+
+import org.apache.hugegraph.util.Ex;
+import com.google.common.collect.ImmutableMap;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+
+import org.apache.hugegraph.config.HugeConfig;
+import org.apache.hugegraph.driver.HugeClient;
+import org.apache.hugegraph.entity.enums.AsyncTaskStatus;
+import org.apache.hugegraph.entity.enums.ExecuteType;
+import org.apache.hugegraph.entity.query.ExecuteHistory;
+import org.apache.hugegraph.exception.InternalException;
+import org.apache.hugegraph.mapper.query.ExecuteHistoryMapper;
+import org.apache.hugegraph.options.HubbleOptions;
+import org.apache.hugegraph.structure.Task;
+import org.apache.hugegraph.util.HubbleUtil;
+import org.apache.hugegraph.util.PageUtil;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
+import lombok.extern.log4j.Log4j2;
+
+@Log4j2
+@Service
+public class ExecuteHistoryService {
+
+    @Autowired
+    private HugeConfig config;
+    @Autowired
+    private ExecuteHistoryMapper mapper;
+
+    /**
+     * 查询执行历史记录
+     *
+     * @param client HugeClient客户端
+     * @param type 查询类型
+     * @param current 当前页码
+     * @param pageSize 每页记录数
+     * @param text2Gremlin 是否需要展示text2Gremlin的执行历史记录
+     * @return IPage<ExecuteHistory> 执行历史记录分页结果
+     */
+    public IPage<ExecuteHistory> list(HugeClient client, int type, long current,
+                                      long pageSize, boolean text2Gremlin) {
+        this.checkTypeValid(type);
+        QueryWrapper<ExecuteHistory> query = Wrappers.query();
+        query.eq("graphspace", client.getGraphSpaceName())
+             .eq("graph", client.getGraphName())
+             .in("execute_type", ExecuteType.getMatchedTypes(type))
+             .orderByDesc("create_time");
+        if (text2Gremlin) {
+            query.apply("LENGTH(text) > 0");
+        }
+        Page<ExecuteHistory> page = new Page<>(current,
+                                               PageUtil.boundedSize(pageSize));
+        IPage<ExecuteHistory> results = this.mapper.selectPage(page, query);
+
+        int limit = this.config.get(HubbleOptions.EXECUTE_HISTORY_SHOW_LIMIT);
+        if (results.getTotal() > limit) {
+            log.debug("Execute history total records: {}", results.getTotal());
+            results.setTotal(limit);
+        }
+        // Get the status of successful execution of asynchronous tasks
+        Instant now = HubbleUtil.nowTime();
+        results.getRecords().forEach((p) -> {
+            if (p.getType().equals(ExecuteType.GREMLIN_ASYNC)) {
+                try {
+                    Task task = client.task().get(p.getAsyncId());
+                    long endDate = task.updateTime() > 0 ? task.updateTime() :
+                                   now.getLong(ChronoField.INSTANT_SECONDS);
+                    p.setDuration(endDate - task.createTime());
+                    p.setAsyncStatus(task.status().toUpperCase());
+                } catch (Exception e) {
+                    p.setDuration(0L);
+                    p.setAsyncStatus(AsyncTaskStatus.UNKNOWN);
+                }
+            }
+            if (p.getType().equals(ExecuteType.CYPHER_ASYNC)) {
+                try {
+                    Task task = client.task().get(p.getAsyncId());
+                    long endDate = task.updateTime() > 0 ? task.updateTime() :
+                                   now.getLong(ChronoField.INSTANT_SECONDS);
+                    p.setDuration(endDate - task.createTime());
+                    p.setAsyncStatus(task.status().toUpperCase());
+                } catch (Exception e) {
+                    p.setDuration(0L);
+                    p.setAsyncStatus(AsyncTaskStatus.UNKNOWN);
+                }
+            }
+        });
+        return results;
+    }
+
+    private void checkTypeValid(int type) {
+        Ex.check(type == ExecuteType.CYPHER.getValue() ||
+                 type == ExecuteType.GREMLIN.getValue() ||
+                 type == ExecuteType.ALGORITHM.getValue() ||
+                 type == ExecuteType.GREMLIN_ASYNC.getValue() ||
+                 type == ExecuteType.CYPHER_ASYNC.getValue() ||
+                 type == ExecuteType.GREMLIN_ALL.getValue() ||
+                 type == ExecuteType.CYPHER_ALL.getValue(),
+                "executehistory type invalid");
+    }
+
+    public ExecuteHistory get(HugeClient client, int id) {
+        QueryWrapper<ExecuteHistory> query = Wrappers.query();
+        query.eq("id", id)
+             .eq("graphspace", client.getGraphSpaceName())
+             .eq("graph", client.getGraphName());
+        ExecuteHistory history = this.mapper.selectOne(query);
+        if (history == null) {
+            return null;
+        }
+        if (history.getType().equals(ExecuteType.GREMLIN_ASYNC)) {
+            try {
+                Task task = client.task().get(history.getAsyncId());
+                history.setDuration(task.updateTime() - task.createTime());
+                history.setAsyncStatus(task.status().toUpperCase());
+            } catch (Exception e) {
+                history.setDuration(0L);
+                history.setAsyncStatus(AsyncTaskStatus.UNKNOWN);
+            }
+        }
+        return history;
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void save(ExecuteHistory history) {
+        if (this.mapper.insert(history) != 1) {
+            throw new InternalException("entity.insert.failed", history);
+        }
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void update(ExecuteHistory history) {
+        if (this.mapper.updateById(history) != 1) {
+            throw new InternalException("entity.update.failed", history);
+        }
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void remove(HugeClient client, int id) {
+        ExecuteHistory history = this.get(client, id);
+        if (history == null) {
+            return;
+        }
+        if (history.getType().equals(ExecuteType.GREMLIN_ASYNC)) {
+            client.task().delete(history.getAsyncId());
+        }
+        QueryWrapper<ExecuteHistory> query = Wrappers.query();
+        query.eq("id", id)
+             .eq("graphspace", client.getGraphSpaceName())
+             .eq("graph", client.getGraphName());
+        if (this.mapper.delete(query) != 1) {
+            throw new InternalException("entity.delete.failed", history);
+        }
+    }
+
+    @Scheduled(fixedDelay = 24 * 60 * 60 * 1000, scheduler = "maintenanceScheduler")
+    public void removeExceedLimit() {
+        // Do not wrap the complete cleanup in one transaction. Without an
+        // outer transaction, each bounded mapper DELETE commits independently.
+        int limit = this.config.get(HubbleOptions.EXECUTE_HISTORY_SHOW_LIMIT);
+        this.mapper.deleteExceedLimit(limit);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void deleteByGraph(String graphSpace, String graph) {
+        this.mapper.deleteByMap(ImmutableMap.of("graphspace", graphSpace,
+                                                "graph", graph));
+    }
+}

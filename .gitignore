@@ -6,11 +6,10 @@ target/
 **.db
 logs/
 ui
-node_modules
+node_modules/
 upload-files/
 demo*
 gen-java
-build
 
 ### STS ###
 .apt_generated
@@ -23,8 +22,8 @@ build
 .svn
 
 ### IntelliJ IDEA ###
-.idea
-.idea/
+.idea/*
+!.idea/vcs.xml
 *.iws
 *.iml
 *.ipr
@@ -32,9 +31,9 @@ build
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
-/dist/
 /nbdist/
 /.nb-gradle/
+dist/
 build/
 
 ### VS Code ###
@@ -45,6 +44,7 @@ build/
 /hubble-fe/node_modules
 /hubble-fe/.pnp
 .pnp.js
+/hugegraph-hubble/hubble-fe/node/node
 
 # testingå
 /hubble-fe/coverage
@@ -76,12 +76,16 @@ yarn-error.log*
 *.pyc
 
 # maven ignore
+apache-hugegraph-*-incubating-*/
 output/
 *.war
 *.zip
 *.tar
-*.tar.gz
+*.tar.gz*
 tree.txt
+*.versionsBackup
+.flattened-pom.xml
+*.truststore
 
 # eclipse ignore
 .settings/
@@ -90,7 +94,65 @@ tree.txt
 *.cache
 *.diff
 *.patch
+# Pinned dependency fixes are required for reproducible frontend installs.
+!hugegraph-hubble/hubble-fe/patches/*.patch
 *.tmp
 
 # system ignore
 Thumbs.db
+
+# client-go
+go.env
+
+# AI-IDE prompt files (We only keep AGENTS.md, other files could soft-linked it when needed)
+# Local AI-agent workspaces and run evidence
+.codex-task/*
+.goal-task/*
+!.goal-task/GLOBAL-TODO.md
+.autonomous/
+.claude/
+superpowers/
+
+# Local Hubble runtime / extracted distributions
+/db*.db
+/db*.trace.db
+/logs/
+/hugegraph-hubble/apache-hugegraph-hubble-*/
+/hugegraph-hubble/hubble-dist/apache-hugegraph-hubble-*/
+/hugegraph-loader/apache-hugegraph-loader-*/
+
+# Locally generated encryption key for managed Text2GQL credentials
+text2gql-master.key
+
+# Local Vermeer development home and generated service credentials.
+/.vermeer-dev/
+**/integration/pd-password
+**/integration/pd.env
+**/integration/server.env
+
+# Local dependency analysis reports
+/hugegraph-dist/scripts/dependency/current-dependencies.txt
+/hugegraph-dist/scripts/dependency/result.txt
+
+# Claude Projects
+CLAUDE.md
+CLAUDE_*.md
+# Gemini/Google
+GEMINI.md
+# GitHub Copilot / Microsoft
+copilot-instructions.md
+.copilot-instructions.md
+# Cursor IDE
+cursor-instructions.md
+.cursor-instructions.md
+cursor.md
+# Windsurf/Codeium
+windsurf.md
+windsurf-instructions.md
+codeium.md
+codeium-instructions.md
+# Other AI coding assistants
+.ai-instructions.md
+*.ai-prompt.md
+WARP.md
+/.agents

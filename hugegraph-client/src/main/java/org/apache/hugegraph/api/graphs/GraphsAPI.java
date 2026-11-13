@@ -1,0 +1,356 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.hugegraph.api.graphs;
+
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hugegraph.api.API;
+import org.apache.hugegraph.client.RestClient;
+import org.apache.hugegraph.exception.InvalidResponseException;
+import org.apache.hugegraph.rest.RestHeaders;
+import org.apache.hugegraph.rest.RestResult;
+import org.apache.hugegraph.structure.LoadingModeOwner;
+import org.apache.hugegraph.structure.constant.GraphMode;
+import org.apache.hugegraph.structure.constant.GraphReadMode;
+import org.apache.hugegraph.structure.constant.HugeType;
+import org.apache.hugegraph.util.E;
+import org.apache.hugegraph.util.JsonUtil;
+
+import com.google.common.collect.ImmutableMap;
+
+public class GraphsAPI extends API {
+
+    private static final String DELIMITER = "/";
+    private static final String MODE = "mode";
+    private static final String GRAPH_READ_MODE = "graph_read_mode";
+    private static final String CLEAR = "clear";
+    private static final String CONFIRM_MESSAGE = "confirm_message";
+    private static final String CLEARED = "cleared";
+    private static final String RELOADED = "reloaded";
+    private static final String UPDATED = "updated";
+    private static final String GRAPHS = "graphs";
+    private static final String MANAGE = "manage";
+    private static final String PATH = "graphspaces/%s/graphs";
+
+    public GraphsAPI(RestClient client, String graphSpace) {
+        super(client);
+        this.path(String.format(PATH, graphSpace));
+    }
+
+    private static String joinPath(String path, String graph) {
+        return String.join(DELIMITER, path, graph);
+    }
+
+    private static String joinPath(String path, String graph, String action) {
+        return String.join(DELIMITER, path, graph, action);
+    }
+
+    @Override
+    protected String type() {
+        return HugeType.GRAPHS.string();
+    }
+
+    // TODO(@Thespcia): in inner version, clone is split into a single method, and doesn't have
+    // this parameter
+    @SuppressWarnings("unchecked")
+    public Map<String, String> create(String name, String cloneGraphName, String configText) {
+        this.client.checkApiVersion("0.67", "dynamic graph add");
+        boolean legacy = !this.client.isSupportGs();
+        RestHeaders headers = new RestHeaders().add(RestHeaders.CONTENT_TYPE,
+                                                    legacy ? "text/plain" :
+                                                    RestHeaders.APPLICATION_JSON);
+        if (legacy) {
+            if (configText == null) {
+                configText = "";
+            } else if (configText.trim().startsWith("{")) {
+                configText = legacyGraphConfig(configText);
+            }
+        }
+        Map<String, Object> params = null;
+        if (StringUtils.isNotEmpty(cloneGraphName)) {
+            params = ImmutableMap.of("clone_graph_name", cloneGraphName);
+        }
+        RestResult result = this.client.post(joinPath(this.path(), name),
+                                             configText, headers, params);
+        return result.readObject(Map.class);
+    }
+
+    private static String legacyGraphConfig(String configText) {
+        Map<?, ?> config = JsonUtil.fromJson(configText, Map.class);
+        Properties properties = new Properties();
+        config.forEach((key, value) -> {
+            E.checkArgument(value instanceof String || value instanceof Number ||
+                            value instanceof Boolean,
+                            "Legacy graph config option '%s' must be a scalar value", key);
+            properties.setProperty(key.toString(), value.toString());
+        });
+        StringWriter text = new StringWriter();
+        try {
+            properties.store(text, null);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        // Commons PropertiesConfiguration trims literal whitespace and does not
+        // decode the JDK writer's escaped leading space. Unicode escapes also
+        // keep legacy request bytes independent of the client's default charset.
+        String serialized = text.toString();
+        StringBuilder encoded = new StringBuilder(serialized.length());
+        for (int i = 0; i < serialized.length(); i++) {
+            char c = serialized.charAt(i);
+            if (c == '\\' && i + 1 < serialized.length()) {
+                char next = serialized.charAt(++i);
+                if (next == ' ') {
+                    encoded.append("\\u0020");
+                } else {
+                    encoded.append(c).append(next);
+                }
+            } else if (c == ' ') {
+                encoded.append("\\u0020");
+            } else if (c > 0x7E) {
+                encoded.append(String.format("\\u%04x", (int) c));
+            } else {
+                encoded.append(c);
+            }
+        }
+        return encoded.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, String> get(String name) {
+        RestResult result = this.client.get(this.path(), name);
+        return result.readObject(Map.class);
+    }
+
+    public List<String> list() {
+        RestResult result = this.client.get(this.path());
+        return result.readList(this.type(), String.class);
+    }
+
+    public List<Map<String, Object>> listProfile(String prefix) {
+        String profilePath = joinPath(this.path(), "profile");
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("prefix", prefix);
+        RestResult result = this.client.get(profilePath, params);
+        List<Map> results = result.readList(Map.class);
+        List<Map<String, Object>> profiles = new ArrayList<>();
+        for (Object entry : results) {
+            profiles.add(JsonUtil.fromJson(JsonUtil.toJson(entry), Map.class));
+        }
+        return profiles;
+    }
+
+    public Map<String, Object> setDefault(String name) {
+        String defaultPath = joinPath(this.path(), name, "default");
+        RestResult result = this.client.post(defaultPath, Collections.emptyMap());
+        return result.readObject(Map.class);
+    }
+
+    public Map<String, Object> unSetDefault(String name) {
+        String unDefaultPath = joinPath(this.path(), name, "default");
+        RestResult result = this.client.delete(unDefaultPath,
+                                                Collections.emptyMap());
+        return result.readObject(Map.class);
+    }
+
+    public Map<String, Object> getDefault() {
+        String defaultPath = joinPath(this.path(), "default");
+        RestResult result = this.client.get(defaultPath);
+        return result.readObject(Map.class);
+    }
+
+    public void clear(String graph) {
+        this.clear(graph, "I'm sure to delete all data");
+    }
+
+    // TODO: clearSchema is not supported yet, will always be true
+    public void clear(String graph, boolean clearSchema) {
+        this.clear(graph, "I'm sure to delete all data");
+    }
+
+    public void clear(String graph, String message) {
+        this.client.delete(joinPath(this.path(), graph, CLEAR),
+                           ImmutableMap.of(CONFIRM_MESSAGE, message));
+    }
+
+    public Map<String, String> update(String name, String nickname) {
+        Map<String, String> actionMap = new HashMap<>();
+        actionMap.put("name", name);
+        actionMap.put("nickname", nickname);
+        RestResult result = this.client.put(this.path(), name,
+                                            ImmutableMap.of("action", "update",
+                                                            "update", actionMap));
+        Map<String, String> response = result.readObject(Map.class);
+
+        E.checkState(response.size() == 1 && response.containsKey(name),
+                     "Response must be formatted to {\"%s\" : status}, " +
+                     "but got %s", name, response);
+        String status = response.get(name);
+        E.checkState(UPDATED.equals(status),
+                     "Server status must be '%s', but got '%s'", UPDATED, status);
+        return response;
+    }
+
+    // wrapper for inner server
+    public void delete(String graph) {
+        this.drop(graph, "I'm sure to drop the graph");
+    }
+
+    public void drop(String graph, String message) {
+        this.client.checkApiVersion("0.67", "dynamic graph delete");
+        this.client.delete(joinPath(this.path(), graph),
+                           ImmutableMap.of(CONFIRM_MESSAGE, message));
+    }
+
+    /**
+     * @deprecated Current Server per-graph management accepts only update.
+     *             Use {@link #reload()} for a whole-server graph reload.
+     */
+    @Deprecated
+    public Map<String, String> reload(String name) {
+        RestResult result = this.client.put(this.path(), name,
+                                            ImmutableMap.of("action", "reload"));
+        Map<String, String> response = result.readObject(Map.class);
+
+        E.checkState(response.size() == 1 && response.containsKey(name),
+                     "Response must be formatted to {\"%s\" : status}, " +
+                     "but got %s", name, response);
+        String status = response.get(name);
+        E.checkState(RELOADED.equals(status),
+                     "Graph %s status must be %s, but got '%s'", name, RELOADED, status);
+        return response;
+    }
+
+    public Map<String, String> reload() {
+        RestResult result = this.client.put(this.path(), MANAGE,
+                                            ImmutableMap.of("action", "reload"));
+        Map<String, String> response = result.readObject(Map.class);
+
+        E.checkState(response.size() == 1 && response.containsKey(GRAPHS),
+                     "Response must be formatted to {\"%s\" : status}, " +
+                     "but got %s", GRAPHS, response);
+        String status = response.get(GRAPHS);
+        E.checkState(RELOADED.equals(status),
+                     "Server status must be '%s', but got '%s'", RELOADED, status);
+        return response;
+    }
+
+    public void mode(String graph, GraphMode mode) {
+        // NOTE: Must provide id for PUT. If you use "graph/mode", "/" will
+        // be encoded to "%2F". So use "mode" here, although inaccurate.
+        this.client.put(joinPath(this.path(), graph, MODE), null, mode);
+    }
+
+    public GraphMode mode(String graph) {
+        RestResult result = this.client.get(joinPath(this.path(), graph), MODE);
+        @SuppressWarnings("unchecked")
+        Map<String, String> mode = result.readObject(Map.class);
+        String value = mode.get(MODE);
+        if (value == null) {
+            throw new InvalidResponseException("Invalid response, expect 'mode' in response");
+        }
+        try {
+            return GraphMode.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            throw new InvalidResponseException("Invalid GraphMode value '%s'", value);
+        }
+    }
+
+    public LoadingModeOwner newLoadingOwner(String graph) {
+        RestResult result = this.client.get(joinPath(this.path(), graph, MODE + "/owners"));
+        return new LoadingModeOwner(result.readObject(Map.class));
+    }
+
+    public void acquireLoadingOwner(String graph, LoadingModeOwner owner) {
+        this.updateLoadingOwner(graph, owner, true);
+    }
+
+    public void releaseLoadingOwner(String graph, LoadingModeOwner owner) {
+        this.updateLoadingOwner(graph, owner, false);
+    }
+
+    private void updateLoadingOwner(String graph, LoadingModeOwner owner, boolean acquire) {
+        RestResult result = this.client.put(joinPath(this.path(), graph, MODE + "/owners"), null,
+                                            owner.request(acquire ? "acquire" : "release"));
+        owner.verify(result.readObject(Map.class), acquire);
+    }
+
+    public void readMode(String graph, GraphReadMode readMode) {
+        this.client.checkApiVersion("0.59", "graph read mode");
+        // NOTE: Must provide id for PUT. If you use "graph/graph_read_mode", "/"
+        // will be encoded to "%2F". So use "graph_read_mode" here, although
+        // inaccurate.
+        this.client.put(joinPath(this.path(), graph, GRAPH_READ_MODE), null, readMode);
+    }
+
+    public GraphReadMode readMode(String graph) {
+        this.client.checkApiVersion("0.59", "graph read mode");
+        RestResult result = this.client.get(joinPath(this.path(), graph), GRAPH_READ_MODE);
+        @SuppressWarnings("unchecked")
+        Map<String, String> readMode = result.readObject(Map.class);
+        String value = readMode.get(GRAPH_READ_MODE);
+        if (value == null) {
+            throw new InvalidResponseException("Invalid response, expect 'graph_read_mode' " +
+                                               "in response");
+        }
+        try {
+            return GraphReadMode.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            throw new InvalidResponseException("Invalid GraphReadMode value '%s'", value);
+        }
+    }
+
+    /**
+     * Clone schema into a new graph in the same GraphSpace. Graph data is not copied.
+     * Sources with edge labels are currently rejected before the target is created.
+     * Requires a Server implementing schema-clone (API 0.73); older Servers return 404.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> cloneSchema(String target, String source, String nickname) {
+        E.checkArgument(StringUtils.isNotBlank(target) && StringUtils.isNotBlank(source),
+                        "Source and target graph names are required");
+        Map<String, Object> config = new HashMap<>();
+        if (StringUtils.isNotBlank(nickname)) {
+            config.put("nickname", nickname);
+        }
+        RestHeaders headers = new RestHeaders().add(RestHeaders.CONTENT_TYPE,
+                                                    RestHeaders.APPLICATION_JSON);
+        RestResult result = this.client.post(joinPath(this.path(), target, "schema-clone"),
+                                             config, headers, ImmutableMap.of("source", source));
+        return result.readObject(Map.class);
+    }
+
+    /** @deprecated This asynchronous endpoint is an extension, not an upstream Server API.
+     * Use {@link #cloneSchema(String, String, String)} for same-GraphSpace schema only.
+     */
+    @Deprecated
+    public String clone(String graph, Map<String, Object> body) {
+        RestResult result = this.client.post(joinPath(this.path(), graph, "clone"), body);
+        Map<String, Object> resultMap = result.readObject(Map.class);
+        return (String) resultMap.get("task_id");
+    }
+}

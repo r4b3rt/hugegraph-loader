@@ -1,9 +1,25 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # host and port of gremlin server
 host: 127.0.0.1
 port: 8182
 
 # timeout in ms of gremlin query
-scriptEvaluationTimeout: 30000
+evaluationTimeout: 30000
 
 # If you want to start gremlin-server for gremlin-console(web-socket),
 # please change `HttpChannelizer` to `WebSocketChannelizer` or comment this line.
@@ -14,14 +30,14 @@ graphs: {
 scriptEngines: {
   gremlin-groovy: {
     plugins: {
-      com.baidu.hugegraph.plugin.HugeGraphGremlinPlugin: {},
+      org.apache.hugegraph.plugin.HugeGraphGremlinPlugin: {},
       org.apache.tinkerpop.gremlin.server.jsr223.GremlinServerGremlinPlugin: {},
       org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin: {
         classImports: [
           java.lang.Math,
-          com.baidu.hugegraph.util.DateUtil,
-          com.baidu.hugegraph.traversal.optimize.Text,
-          com.baidu.hugegraph.traversal.optimize.TraversalUtil
+          org.apache.hugegraph.util.DateUtil,
+          org.apache.hugegraph.traversal.optimize.Text,
+          org.apache.hugegraph.traversal.optimize.TraversalUtil
         ],
         methodImports: [java.lang.Math#*]
       },
@@ -35,31 +51,31 @@ serializers:
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GryoLiteMessageSerializerV1d0,
       config: {
         serializeResultToString: false,
-        ioRegistries: [com.baidu.hugegraph.io.HugeGraphIoRegistry]
+        ioRegistries: [org.apache.hugegraph.io.HugeGraphIoRegistry]
       }
   }
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1,
       config: {
         serializeResultToString: false,
-        ioRegistries: [com.baidu.hugegraph.io.HugeGraphIoRegistry]
+        ioRegistries: [org.apache.hugegraph.io.HugeGraphIoRegistry]
       }
   }
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV1d0,
       config: {
         serializeResultToString: false,
-        ioRegistries: [com.baidu.hugegraph.io.HugeGraphIoRegistry]
+        ioRegistries: [org.apache.hugegraph.io.HugeGraphIoRegistry]
       }
   }
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV2d0,
       config: {
         serializeResultToString: false,
-        ioRegistries: [com.baidu.hugegraph.io.HugeGraphIoRegistry]
+        ioRegistries: [org.apache.hugegraph.io.HugeGraphIoRegistry]
       }
   }
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV3d0,
       config: {
         serializeResultToString: false,
-        ioRegistries: [com.baidu.hugegraph.io.HugeGraphIoRegistry]
+        ioRegistries: [org.apache.hugegraph.io.HugeGraphIoRegistry]
       }
   }
 metrics: {

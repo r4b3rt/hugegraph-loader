@@ -1,0 +1,413 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.hugegraph.service;
+
+import static org.apache.hugegraph.driver.factory.PDHugeClientFactory.DEFAULT_GRAPHSPACE;
+import static org.apache.hugegraph.driver.factory.PDHugeClientFactory.DEFAULT_SERVICE;
+
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import javax.net.ssl.SSLException;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.collect.ImmutableList;
+import lombok.extern.log4j.Log4j2;
+import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.codec.digest.DigestUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hugegraph.config.HugeConfig;
+import org.apache.hugegraph.driver.HugeClient;
+import org.apache.hugegraph.driver.factory.PDHugeClientFactory;
+import org.apache.hugegraph.entity.GraphConnection;
+import org.apache.hugegraph.exception.ParameterizedException;
+import org.apache.hugegraph.exception.ServerException;
+import org.apache.hugegraph.options.HubbleOptions;
+import org.apache.hugegraph.structure.auth.TokenPayload;
+import org.apache.hugegraph.structure.auth.User;
+import org.apache.hugegraph.util.E;
+import org.apache.hugegraph.util.HugeClientUtil;
+import org.apache.hugegraph.util.JsonUtil;
+import org.apache.hugegraph.util.UrlUtil;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Log4j2
+@Service
+public final class HugeClientPoolService {
+
+    private static final ObjectMapper POLICY_MAPPER = new ObjectMapper()
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+
+    @Autowired
+    private HugeConfig config;
+    @Autowired
+    private SettingSSLService sslService;
+    @Autowired
+    private String cluster;
+    @Autowired(required = false)
+    private PDHugeClientFactory pdHugeClientFactory;
+
+    private final Map<String, HugeClient> clients = new ConcurrentHashMap<>();
+    private final Map<HugeClient, StatisticsContext> statisticsContexts =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    public String statisticsContext(HugeClient client) {
+        StatisticsContext context = this.statisticsContexts.get(client);
+        return context == null ? null : context.key();
+    }
+
+    /** Return null when current policy metadata cannot safely support snapshot reuse. */
+    public String statisticsPolicy(HugeClient client) {
+        StatisticsContext context = this.statisticsContexts.get(client);
+        if (context == null || (!context.bearer() && context.username() == null)) {
+            return "";
+        }
+        User.UserRole policy;
+        try {
+            Object userId;
+            if (context.bearer()) {
+                TokenPayload identity = client.auth().verifyToken();
+                E.checkState(identity != null && StringUtils.isNotEmpty(identity.userId()),
+                             "Current-user identity is unavailable");
+                userId = identity.userId();
+            } else {
+                if (!client.supportsDefaultRole()) {
+                    // Legacy lookup lists all users and may require auth administration.
+                    return null;
+                }
+                User user = client.findUserByName(context.username());
+                E.checkState(user != null && context.username().equals(user.name()),
+                             "Current-user identity is unavailable");
+                userId = user.id();
+            }
+            policy = client.auth().getUserRole(userId);
+        } catch (ServerException e) {
+            if (e.status() == 403 || e.status() == 404) {
+                // Older readers may query graph data without access to auth metadata.
+                return null;
+            }
+            throw e;
+        }
+        E.checkState(policy != null, "Current authorization policy is unavailable");
+        try {
+            return DigestUtils.sha256Hex(POLICY_MAPPER.writeValueAsBytes(policy.roles()));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Unable to serialize current authorization policy", e);
+        }
+    }
+
+    private record StatisticsContext(String key, String username, boolean bearer) {
+    }
+
+    private Cache<String, List<String>> urlCache = CacheBuilder.newBuilder()
+            .maximumSize(HubbleOptions.CLIENT_URL_CACHE_MAX_ENTRIES.defaultValue())
+            .expireAfterWrite(1, TimeUnit.HOURS)
+            .build();
+
+    @PostConstruct
+    private void initializeUrlCache() {
+        this.urlCache = CacheBuilder.newBuilder()
+                .maximumSize(this.config.get(
+                             HubbleOptions.CLIENT_URL_CACHE_MAX_ENTRIES))
+                .expireAfterWrite(1, TimeUnit.HOURS)
+                .build();
+    }
+
+    @PreDestroy
+    public void destroy() {
+        log.info("Destroy HugeClient pool");
+        for (HugeClient client : this.clients.values()) {
+            client.close();
+        }
+    }
+
+    public HugeClient createUnauthClient() {
+        // Get all graphspace under cluster
+        return getOrCreate(null, null, null, null);
+    }
+
+    public HugeClient createUnauthClient(int timeout) {
+        return this.create(null, null, null, null, null, null, timeout);
+    }
+
+    public HugeClient createUnauthClient(String graphSpace, String graph) {
+        return getOrCreate(null, graphSpace, graph, null);
+    }
+
+    public HugeClient createTempTokenClient(String token) {
+        return getOrCreate(null, null, null, token);
+    }
+
+    public HugeClient createTempBasicClient(String username, String password) {
+        return getOrCreate(null, null, null, null, username, password);
+    }
+
+    public HugeClient createBasicClient(String graphSpace, String graph,
+                                        String username, String password) {
+        return getOrCreate(null, graphSpace, graph, null, username, password);
+    }
+
+    public HugeClient createAuthClient(String graphSpace,
+            String graph, String token) {
+        return getOrCreate(null, graphSpace, graph, token);
+    }
+
+    public List<String> discoveredServerURLs() {
+        return new ArrayList<>(this.allAvailableURLs(null, null));
+    }
+
+    public HugeClient createDiscoveredServerClient(String url,
+                                                   String authContext,
+                                                   int timeout) {
+        return this.create(url, null, null, authContext, null, null, timeout);
+    }
+
+    public HugeClient getOrCreate(String url, String graphSpace, String graph,
+            String token) {
+        // 去掉缓存，固定每个 request 分配一个 client
+        return getOrCreate(url, graphSpace, graph, token, null, null);
+    }
+
+    private HugeClient getOrCreate(String url, String graphSpace, String graph,
+            String token, String username, String password) {
+        // 去掉缓存，固定每个 request 分配一个 client
+        return create(url, graphSpace, graph, token, username, password);
+    }
+
+    public HugeClient create(String url, String graphSpace, String graph,
+            String token) {
+        return create(url, graphSpace, graph, token, null, null);
+    }
+
+    private HugeClient create(String url, String graphSpace, String graph,
+            String token, String username, String password) {
+        return this.create(url, graphSpace, graph, token, username, password,
+                           null);
+    }
+
+    private HugeClient create(String url, String graphSpace, String graph,
+            String token, String username, String password,
+            Integer timeoutOverride) {
+        if (StringUtils.isEmpty(url)) {
+            List<String> urls = this.allAvailableURLs(graphSpace, graph);
+
+            if (CollectionUtils.isEmpty(urls)) {
+                throw new ParameterizedException("service.no-available");
+            }
+
+            for (String tmpurl : urls) {
+                if (StringUtils.isEmpty(tmpurl)) {
+                    continue;
+                }
+                HugeClient tmpclient = null;
+                try {
+                    tmpclient = this.create(tmpurl, graphSpace, graph,
+                                            token, username, password,
+                                            timeoutOverride);
+                    tmpclient.versionManager().getApiVersion();
+                    if (this.config.get(HubbleOptions.PD_ENABLED)) {
+                        List<String> peers = Arrays.stream(this.config.get(HubbleOptions.PD_PEERS).split(","))
+                                                   .map(String::trim).filter(peer -> !peer.isEmpty())
+                                                   .distinct().sorted().toList();
+                        // PD may select another replica for the same logical
+                        // graph. Share statistics within its cluster and auth
+                        // context, while explicit URLs remain isolated below.
+                        this.registerStatisticsContext(tmpclient,
+                                Arrays.asList("pd", peers, this.cluster),
+                                token, username, password);
+                    }
+                    return tmpclient;
+                } catch (Exception e) {
+                    if (tmpclient != null) {
+                        tmpclient.close();
+                    }
+                    if (!isTransportFailure(e)) {
+                        throw e;
+                    }
+                    // Do not log endpoint credentials or replay business requests.
+                    log.debug("Discovered server connection failed; trying next candidate");
+                }
+            }
+            throw new ParameterizedException("service.no-available");
+        }
+
+        GraphConnection connection = new GraphConnection();
+        try {
+            UrlUtil.Host host = UrlUtil.parseHost(url);
+            connection.setProtocol(host.getScheme());
+            connection.setHost(host.getHost());
+            connection.setPort(host.getPort());
+        } catch (IllegalArgumentException e) {
+            throw new ParameterizedException("service.url.parse.error", e,
+                                             "[REDACTED]");
+        }
+
+        connection.setToken(token);
+        connection.setUsername(username);
+        connection.setPassword(password);
+        connection.setGraphSpace(graphSpace);
+        connection.setGraph(graph);
+        if (connection.getTimeout() == null) {
+            int timeout = timeoutOverride != null ?
+                          timeoutOverride :
+                          this.config.get(HubbleOptions.CLIENT_REQUEST_TIMEOUT);
+            connection.setTimeout(timeout);
+        }
+        this.sslService.configSSL(this.config, connection);
+        HugeClient client = HugeClientUtil.tryConnect(connection);
+        this.registerStatisticsContext(client, url, token, username, password);
+
+        return client;
+    }
+
+    private void registerStatisticsContext(HugeClient client, Object target,
+                                           String token, String username, String password) {
+        String authType = token != null ? "bearer" : username != null ? "basic" : "anonymous";
+        String key = DigestUtils.sha256Hex(JsonUtil.toJson(
+                Arrays.asList(target, authType, token, username, password)));
+        this.statisticsContexts.put(client, new StatisticsContext(key, username, token != null));
+    }
+
+    /**
+     * 获取所有可用的URL列表
+     *
+     * @param graphSpace 图形空间名称
+     * @param service    服务名称
+     * @return URL列表
+     */
+    private List<String> allAvailableURLs(String graphSpace, String service) {
+        // Non-PD mode: directly return the configured server URL
+        boolean pdEnabled = config.get(HubbleOptions.PD_ENABLED);
+        if (!pdEnabled) {
+            String directUrl = config.get(HubbleOptions.SERVER_URL);
+            log.info("PD mode disabled, using direct server URL: {}", directUrl);
+            return ImmutableList.of(directUrl);
+        }
+
+        List<String> realtimeurls = new ArrayList<>();
+        if (StringUtils.isNotEmpty(graphSpace)) {
+            if (StringUtils.isNotEmpty(service)) {
+                // Get realtineurls From service
+                List<String> urls = this.discoverURLs(graphSpace, service);
+                if (!CollectionUtils.isEmpty(urls)) {
+                    // 打乱顺序
+                    Collections.shuffle(urls);
+                    realtimeurls.addAll(urls);
+                }
+            }
+
+            List<String> urls = this.discoverURLs(graphSpace, null);
+            if (!CollectionUtils.isEmpty(urls)) {
+                // 打乱顺序
+                Collections.shuffle(urls);
+                realtimeurls.addAll(urls);
+            }
+        }
+
+        List<String> urls = this.discoverURLs(DEFAULT_GRAPHSPACE, DEFAULT_SERVICE);
+        String defaultCacheKey = cacheKey(DEFAULT_GRAPHSPACE, DEFAULT_SERVICE);
+        if (!CollectionUtils.isEmpty(urls)) {
+            Collections.shuffle(urls);
+            // 设置默认URL缓存
+            urlCache.put(defaultCacheKey, urls);
+            realtimeurls.addAll(urls);
+        }
+
+        String cacheKey = cacheKey(graphSpace, service);
+        if (!CollectionUtils.isEmpty(realtimeurls)) {
+            urlCache.put(cacheKey, realtimeurls);
+            return realtimeurls;
+        } else {
+
+            List<String> cacheKeys = new ArrayList<>();
+            cacheKeys.add(cacheKey(graphSpace, service));
+            cacheKeys.add(cacheKey(graphSpace, null));
+            if (StringUtils.isEmpty(graphSpace)) {
+                cacheKeys.add(defaultCacheKey);
+            }
+            for (String ck : cacheKeys) {
+                List<String> r = urlCache.getIfPresent(ck);
+                if (!CollectionUtils.isEmpty(r)) {
+                    return r;
+                }
+            }
+
+            log.warn("Get empty list of availabel url from cache: {}/{}",
+                    graphSpace, service);
+
+            return ImmutableList.of();
+        }
+    }
+
+    private List<String> discoverURLs(String graphSpace, String service) {
+        try {
+            List<String> urls = this.pdHugeClientFactory.getURLs(
+                    this.cluster, graphSpace, service);
+            if (CollectionUtils.isEmpty(urls)) {
+                return Collections.emptyList();
+            }
+            return new ArrayList<>(urls);
+        } catch (RuntimeException e) {
+            log.debug("PD service discovery failed for graph space/service");
+            return Collections.emptyList();
+        }
+    }
+
+    private static String cacheKey(String graphSpace, String service) {
+        return cacheKeyPart(graphSpace) + cacheKeyPart(service);
+    }
+
+    private static String cacheKeyPart(String value) {
+        return value == null ? "-1:" : value.length() + ":" + value;
+    }
+
+    private static boolean isTransportFailure(Throwable error) {
+        boolean transportFailure = false;
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable cause = error; cause != null && seen.add(cause);
+             cause = cause.getCause()) {
+            if (cause instanceof ServerException || cause instanceof SSLException ||
+                cause instanceof IllegalArgumentException || cause instanceof IllegalStateException) {
+                return false;
+            }
+            if (cause instanceof ConnectException || cause instanceof SocketTimeoutException) {
+                transportFailure = true;
+            }
+        }
+        return transportFailure;
+    }
+
+}

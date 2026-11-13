@@ -1,0 +1,58 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.hugegraph.unit;
+
+import org.apache.hugegraph.driver.GremlinManagerTest;
+import org.apache.hugegraph.driver.HugeClientCompatibilityTest;
+import org.apache.hugegraph.driver.ServerCompatibilityTest;
+import org.junit.runner.RunWith;
+import org.junit.runners.Suite;
+
+@RunWith(Suite.class)
+@Suite.SuiteClasses({
+        VertexSerializerTest.class,
+        PathSerializerTest.class,
+        RestResultTest.class,
+        RestClientStatusTest.class,
+        AuthApiPathTest.class,
+        BatchElementRequestTest.class,
+        PropertyKeyTest.class,
+        IndexLabelTest.class,
+        GraphSpaceAPITest.class,
+        ManagerAPITest.class,
+        GraphsAPITest.class,
+        LoadingModeOwnerTest.class,
+        PDHugeClientFactoryTest.class,
+        HugeClientCompatibilityTest.class,
+        ServerCompatibilityTest.class,
+        CommonUtilTest.class,
+        IdUtilTest.class,
+        SplicingIdGeneratorTest.class,
+        HugeClientBuilderTest.class,
+        GremlinManagerTest.class,
+        ServerExceptionTest.class,
+        HugeClientFakeServerTest.class,
+        GraphElementTest.class,
+        JsonUtilTest.class,
+        EdgeLabelTest.class,
+        VertexAPITest.class,
+        TraverserRequestTest.class,
+        StructureHelperTest.class
+})
+public class UnitTestSuite {
+}
